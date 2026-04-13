@@ -1,0 +1,25 @@
+Copyright (c) 2026 Bracken Ridge Swimming Club (Wizards) committee
+
+This software is licensed under a Non-Commercial License.
+
+Permission is granted to use, copy, modify, and distribute this software 
+for non-commercial purposes only, subject to the following conditions:
+
+1. Attribution
+   You must give appropriate credit to the original author in any copies 
+   or substantial portions of the software.
+
+2. Non-Commercial Use Only
+   You may not use this software, in whole or in part, for any commercial 
+   purpose. This includes, but is not limited to:
+   - Selling the software
+   - Offering it as part of a paid product or service
+   - Using it in a business environment to generate revenue
+   - Providing it as a hosted or SaaS solution
+
+3. Commercial Licensing
+   Any commercial use requires a separate commercial license from the author.
+
+To obtain a commercial license, contact: [secretary@brswim.org.au]
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
