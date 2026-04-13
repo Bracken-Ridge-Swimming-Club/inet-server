@@ -1,0 +1,13 @@
+node_modules/
+
+# WhatsApp session data (contains auth tokens — do not commit)
+runtime-data/
+
+# WhatsApp Web JS cache
+.wwebjs_cache/
+
+# Compiled output
+dist/
+
+# Environment / local config
+.env
