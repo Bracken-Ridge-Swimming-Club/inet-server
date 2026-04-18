@@ -13,6 +13,8 @@ let needNewLine = false;
 let dotCount = 0;
 let whatsAppGood = false;
 let groupID = '';
+let brscPingCount = 0;
+let nonBrscPingCount = 0;
 
 
 // Get current date/time as nicely formatted date/time (IE. dd-MM-yyyy HH:mm:ss)
@@ -109,7 +111,21 @@ async function sendMessage(message: string) {
 function runHeartbeatListener() {
   // Get server going
   const server = http.createServer(async (req, res) => {
+    const isBrsc = req.headers['source-x-name'] === 'brsc';
+
+    if (!isBrsc) {
+      nonBrscPingCount++;
+      const ip = req.socket.remoteAddress ?? 'unknown';
+      const timeString = nowString();
+      console.log(`Non-BRSC request: ${req.method} from ${ip} at ${timeString}`);
+      await sendMessage(`${timeString} - Unknown request received: ${req.method} from ${ip}`);
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+
     if (req.method === "POST") {
+      brscPingCount++;
       const now = Date.now();
       // First POST after start OR after sender was down
       if (lastPostTime === null || senderDownLogged) {
@@ -136,6 +152,7 @@ function runHeartbeatListener() {
       });
       return;
     }
+
     res.writeHead(404);
     res.end();
   });
@@ -173,7 +190,13 @@ function startAliveMessages() {
 
   const sendAlive = async () => {
     const timeString = nowString();
-    await sendMessage(`${timeString} - Alive and monitoring...`);
+    await sendMessage(
+      `${timeString} - Alive and monitoring...\n` +
+      `  BRSC pings since last report: ${brscPingCount}\n` +
+      `  Unknown requests since last report: ${nonBrscPingCount}`
+    );
+    brscPingCount = 0;
+    nonBrscPingCount = 0;
   };
 
   const now = new Date();
