@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Monitors BRSC club internet connection and reports status to a WhatsApp group",
   "scripts": {
-    "listener": "ts-node src/index.ts"
+    "listener": "tsx src/index.ts"
   },
   "author": "mat",
   "license": "ISC",
@@ -11,7 +11,7 @@
   "devDependencies": {
     "@types/node": "^25.0.3",
     "@types/qrcode-terminal": "^0.12.2",
-    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
   "dependencies": {
