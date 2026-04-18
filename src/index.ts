@@ -190,10 +190,13 @@ function startAliveMessages() {
 
   const sendAlive = async () => {
     const timeString = nowString();
+    const unknownLine = nonBrscPingCount > 0
+      ? `\n  Unknown requests since last report: ${nonBrscPingCount}`
+      : '';
     await sendMessage(
       `${timeString} - Alive and monitoring...\n` +
-      `  BRSC pings since last report: ${brscPingCount}\n` +
-      `  Unknown requests since last report: ${nonBrscPingCount}`
+      `  BRSC pings since last report: ${brscPingCount}` +
+      unknownLine
     );
     brscPingCount = 0;
     nonBrscPingCount = 0;
@@ -226,7 +229,8 @@ const client = new Client({
   }),
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    executablePath: '/usr/bin/chromium',
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
   }
 });
 
@@ -255,6 +259,15 @@ client.on(Events.DISCONNECTED, (reason) => {
   console.log('Client was logged out:', reason);
 });
 
+
+const shutdown = async () => {
+  console.log('\nShutting down...');
+  await client.destroy();
+  await new Promise(res => setTimeout(res, 3000));
+  process.exit(0);
+};
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 client.initialize();
 
