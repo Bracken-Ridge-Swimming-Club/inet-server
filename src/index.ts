@@ -94,17 +94,29 @@ async function clearGroupMessages() {
 
 }
 
+function escapeWhatsApp(message: string): string {
+  return message
+    .replace(/\_/g, '\\_')
+    .replace(/\*/g, '\\*')
+    .replace(/\~/g, '\\~')
+    .replace(/\`/g, '\\`')
+    .replace(/\d/g, (match) => `\u200B${match}`);
+}
+
 async function sendMessage(message: string) {
   if (whatsAppGood) {
-    const escapedMessage = message
-      .replace(/\_/g, '\\_')  // Escape underscores (_)
-      .replace(/\*/g, '\\*')  // Escape asterisks (*)
-      .replace(/\~/g, '\\~')  // Escape tildes (~)
-      .replace(/\`/g, '\\`') // Escape backticks (`)
-      .replace(/\d/g, (match) => `\u200B${match}`); // add zero-width space before each digit to prevent WhatsApp thinking it is a phone number
-
+    const escapedMessage = escapeWhatsApp(message);
     await client.sendMessage(groupID, escapedMessage);
     console.log(`>> ${escapedMessage}`);
+  }
+}
+
+async function sendPrivateMessage(message: string) {
+  if (whatsAppGood) {
+    const escapedMessage = escapeWhatsApp(message);
+    const myId = client.info.wid._serialized;
+    await client.sendMessage(myId, escapedMessage);
+    console.log(`[private] >> ${escapedMessage}`);
   }
 }
 
@@ -118,7 +130,7 @@ function runHeartbeatListener() {
       const ip = req.socket.remoteAddress ?? 'unknown';
       const timeString = nowString();
       console.log(`Non-BRSC request: ${req.method} from ${ip} at ${timeString}`);
-      await sendMessage(`${timeString} - Unknown request received: ${req.method} from ${ip}`);
+      await sendPrivateMessage(`${timeString} Club monitor received unknown request: ${req.method} from ${ip}`);
       res.writeHead(403);
       res.end();
       return;
