@@ -351,7 +351,7 @@ process.on('unhandledRejection', (err) => {
 
 client.initialize();
 
-await waitForWhatsAppGood(30000);
+await waitForWhatsAppGood(120000);
 groupID = await getGroupID(WHATSAPP_GROUP);
 await clearGroupMessages();
 
