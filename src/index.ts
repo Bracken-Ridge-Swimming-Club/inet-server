@@ -1,6 +1,7 @@
 import http from "http";
 import WhatsApp from 'whatsapp-web.js';
 import qrcode from 'qrcode-terminal';
+import { execFile } from 'child_process';
 
 const { Client, LocalAuth, Events } = WhatsApp;
 const PORT = 52825;
@@ -24,6 +25,15 @@ const UNDER_SYSTEMD = !!process.env.INVOCATION_ID;
 // so systemd leaves the service stopped instead of restart-looping on a QR prompt
 const EXIT_NEEDS_AUTH = 78;
 const SCAN_WAIT_MS = 5 * 60 * 1000; // Time allowed to scan a QR code when run manually
+
+// Tell systemd we're up (the unit is Type=notify, so it shows 'activating' until
+// this is sent - WhatsApp linked, group found and listening). No-op when run manually.
+function notifySystemdReady() {
+  if (!process.env.NOTIFY_SOCKET) return;
+  execFile('systemd-notify', ['--ready'], (err) => {
+    if (err) console.warn('systemd-notify failed:', err.message);
+  });
+}
 
 
 // Get current date/time as nicely formatted date/time (IE. dd-MM-yyyy HH:mm:ss)
@@ -218,6 +228,7 @@ function runHeartbeatListener() {
   // Finally, start actually listening...
   server.listen(PORT, "0.0.0.0", async () => {
     console.log(`Listening on IPv4 port ${PORT}`);
+    notifySystemdReady();
     await sendMessage(`Restarted monitoring BRSC Internet\n connection (${nowString()})\n\n`);
   });
 }
