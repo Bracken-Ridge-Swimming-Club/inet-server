@@ -15,6 +15,15 @@ let whatsAppGood = false;
 let groupID = '';
 let brscPingCount = 0;
 let nonBrscPingCount = 0;
+let readyDeadline = 0;
+let shuttingDown = false;
+
+// systemd sets INVOCATION_ID for services; a manual `npm run listener` doesn't have it
+const UNDER_SYSTEMD = !!process.env.INVOCATION_ID;
+// Exit code for "WhatsApp needs re-linking" - the unit has RestartPreventExitStatus=78
+// so systemd leaves the service stopped instead of restart-looping on a QR prompt
+const EXIT_NEEDS_AUTH = 78;
+const SCAN_WAIT_MS = 5 * 60 * 1000; // Time allowed to scan a QR code when run manually
 
 
 // Get current date/time as nicely formatted date/time (IE. dd-MM-yyyy HH:mm:ss)
@@ -30,21 +39,19 @@ function nowString(): string {
 }
 
 // Wait for 'whatsAppGood' to become true, with a timeout
+// (readyDeadline is pushed out while a QR code is waiting to be scanned)
 async function waitForWhatsAppGood(timeout: number): Promise<boolean> {
+  readyDeadline = Date.now() + timeout;
   return new Promise((resolve, reject) => {
     const interval = setInterval(() => {
       if (whatsAppGood) {
         clearInterval(interval);  // Stop the interval once the condition is met
-        clearTimeout(timer)
         resolve(true);
+      } else if (Date.now() > readyDeadline) {
+        clearInterval(interval);
+        reject(new Error('Timeout waiting for WhatsApp to be ready.'));
       }
     }, 500); // Check every 500ms if 'whatsAppGood' is true
-
-    // Timeout if the condition is not met within the specified time
-    const timer = setTimeout(() => {
-      clearInterval(interval);  // Clear the interval
-      reject(new Error('Timeout waiting for WhatsApp to be ready.'));
-    }, timeout);
   });
 }
 
@@ -272,9 +279,16 @@ client.on(Events.READY, () => {
 });
 // QR code event (for first-time authorization)
 client.on(Events.QR_RECEIVED, (qr) => {
+  if (UNDER_SYSTEMD) {
+    // Nobody can scan a QR code in the journal - stop and wait for a manual re-link
+    console.error('WhatsApp is not linked. Stopping service - run `npm run listener` manually to scan a QR code.');
+    shutdown(EXIT_NEEDS_AUTH);
+    return;
+  }
   console.log('Please scan the following QR code with your WhatsApp mobile app.');
   // Print the QR code in the console (ASCII format)
   qrcode.generate(qr, { small: true });
+  readyDeadline = Date.now() + SCAN_WAIT_MS;
 });
 
 // Handle authentication failure
@@ -286,18 +300,43 @@ client.on(Events.AUTHENTICATION_FAILURE, (message) => {
 // Handle disconnection
 client.on(Events.DISCONNECTED, (reason) => {
   whatsAppGood = false;
-  console.log('Client was logged out:', reason);
+  if (reason === 'LOGOUT') {
+    // Unlinked from the phone - session is gone, needs a manual re-link
+    console.error('WhatsApp was logged out (device unlinked). Run `npm run listener` manually to re-link.');
+    shutdown(EXIT_NEEDS_AUTH);
+  } else {
+    // The library closes the browser on any other disconnect - exit so systemd restarts us
+    console.error('WhatsApp disconnected:', reason);
+    shutdown(1);
+  }
 });
 
 
-const shutdown = async () => {
+const shutdown = async (exitCode = 0) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log('\nShutting down...');
-  await client.destroy();
+  try {
+    await client.destroy();
+  } catch (err) {
+    console.warn('client.destroy() failed:', err instanceof Error ? err.message : err);
+  }
   await new Promise(res => setTimeout(res, 3000));
-  process.exit(0);
+  process.exit(exitCode);
 };
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => shutdown());
+process.on('SIGTERM', () => shutdown());
+
+// The library can reject in the background while we're shutting down (e.g. it
+// tries to reload the page after a logout) - don't let that crash the exit
+process.on('unhandledRejection', (err) => {
+  if (shuttingDown) {
+    console.warn('Ignoring error during shutdown:', err instanceof Error ? err.message : err);
+    return;
+  }
+  console.error('Unhandled rejection:', err);
+  process.exit(1);
+});
 
 client.initialize();
 
