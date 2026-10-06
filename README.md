@@ -78,11 +78,12 @@ Don't run `npm run listener` by hand while the service is running — both would
 
 ### Re-authenticating under systemd
 
-If the session is lost, the QR code is only printed to the journal. To re-auth:
+If WhatsApp isn't linked (first install, or the device was unlinked/logged out from the phone), the service doesn't try to show a QR code. It logs `WhatsApp is not linked…` (or `WhatsApp was logged out…`), shuts down cleanly and exits with code 78. A drop-in, `/etc/systemd/system/inet-server.service.d/needs-auth.conf` (`RestartPreventExitStatus=78`), stops systemd restarting it, so `systemctl status inet-server` shows it as `failed` with `status=78`. To re-auth:
 
-1. `sudo systemctl stop inet-server`
-2. Run `npm run listener` interactively from `/opt/inet-server` as `admin`, and scan the QR code.
-3. Once `WhatsApp Web is ready!` appears, stop it with Ctrl+C and run `sudo systemctl start inet-server`.
+1. Run `npm run listener` interactively from `/opt/inet-server` as `admin`, and scan the QR code (you have 5 minutes per QR code).
+2. Once `Restarted monitoring…` is posted, stop it with Ctrl+C and run `sudo systemctl start inet-server`.
+
+Any other WhatsApp disconnect exits with code 1, so systemd restarts the service as normal.
 
 ## Security notes
 
