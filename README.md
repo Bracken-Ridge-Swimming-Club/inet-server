@@ -6,16 +6,30 @@ A small sender device at the club posts HTTP heartbeats to this listener. If hea
 
 ## How it works
 
-1. A remote device POSTs a heartbeat to this listener every minute or so.
-2. If no heartbeat is received for 4 minutes, an outage message is sent to the WhatsApp group.
-3. When heartbeats resume, a reconnection message is sent.
-4. Every day at 08:00 a routine "alive" message is sent to confirm the monitor is still running.
+1. On startup the monitor **deletes all existing messages in the WhatsApp group** (to keep the channel quiet), then posts a "Restarted monitoring" message.
+2. A remote device POSTs a heartbeat to this listener every minute or so.
+3. If no heartbeat is received for 4 minutes, an outage message is sent to the WhatsApp group.
+4. When heartbeats resume, a reconnection message is sent.
+5. Every day at 08:00 (local time) a routine "alive" message is sent to confirm the monitor is still running, including the number of heartbeats (and any unknown requests) since the last report.
+
+### Heartbeat format
+
+Heartbeats must be `POST` requests carrying the header `source-x-name: brsc`:
+
+```bash
+curl -X POST http://<host>:52825/ -H 'source-x-name: brsc'
+```
+
+- A `POST` with the header returns `200 OK` and counts as a heartbeat.
+- Any other method with the header returns `404` and is ignored.
+- Any request **without** the header returns `403`, and a "received unknown request" notice is sent privately to the bot account's own WhatsApp chat (not the group).
 
 ## Setup
 
 ### Prerequisites
 
 - Node.js 18+
+- Chromium at `/usr/bin/chromium` (the path is hardcoded in `src/index.ts`)
 - A WhatsApp account to use as the sender bot
 
 ### Install
@@ -49,6 +63,78 @@ Edit `src/index.ts` to change:
 ```bash
 npm run listener
 ```
+
+## Production deployment (systemd)
+
+In production the monitor runs as the systemd service `inet-server.service` (`/etc/systemd/system/inet-server.service`), as user `admin` from `/opt/inet-server`, with `Restart=on-failure`.
+
+A drop-in, `/etc/systemd/system/inet-server.service.d/notify-ready.conf`, makes it `Type=notify` (`NotifyAccess=all`, `TimeoutStartSec=15min`). The service runs `systemd-notify --ready` only once WhatsApp is linked, the group is found and it's listening on port 52825. Until then `systemctl status` shows `activating (start)`, not `active (running)`, so "running" really means connected.
+
+```bash
+sudo systemctl status inet-server
+sudo systemctl restart inet-server
+journalctl -u inet-server -f        # live logs
+```
+
+Don't run `npm run listener` by hand while the service is running — both would use the same WhatsApp session in `runtime-data/`.
+
+### Re-authenticating under systemd
+
+If WhatsApp isn't linked (first install, or the device was unlinked/logged out from the phone), the service doesn't try to show a QR code. It logs `WhatsApp is not linked…` (or `WhatsApp was logged out…`), shuts down cleanly and exits with code 78. A drop-in, `/etc/systemd/system/inet-server.service.d/needs-auth.conf` (`RestartPreventExitStatus=78`), stops systemd restarting it, so `systemctl status inet-server` shows it as `failed` with `status=78`. To re-auth:
+
+1. Run `npm run listener` interactively from `/opt/inet-server` as `admin`, and scan the QR code (you have 5 minutes per QR code).
+2. Once `Restarted monitoring…` is posted, stop it with Ctrl+C and run `sudo systemctl start inet-server`.
+
+Any other WhatsApp disconnect exits with code 1, so systemd restarts the service as normal.
+
+## Troubleshooting
+
+If the group has gone quiet (no alive message at 08:00, no restart/connect messages), log in to the Pi and work through these.
+
+**1. Is it running, and if not, why did it stop?**
+
+```bash
+systemctl status inet-server
+```
+
+Check the `Active:` line and the exit status:
+
+- `failed … status=78/CONFIG`: WhatsApp needs re-linking. See [Re-authenticating under systemd](#re-authenticating-under-systemd).
+- `failed … status=1`: it crashed, or disconnected for some other reason. Read the full log (step 2).
+- `activating (auto-restart)`: it's in a crash loop. Read the full log (step 2).
+
+**2. Read the full log**
+
+```bash
+journalctl -u inet-server -n 100 --no-pager
+```
+
+Find the last `Started inet-server.service` line and read down from there:
+
+| Log line | Meaning |
+|---|---|
+| `WhatsApp is not linked. Stopping service…` | It started while logged out. Re-link it. |
+| `WhatsApp was logged out (device unlinked)…` | It was unlinked while running. Re-link it. |
+| `WhatsApp disconnected: <reason>` | Some other disconnect; systemd should have restarted it. |
+| `Timeout waiting for WhatsApp to be ready.` | It never connected. Check whether the Pi still appears in the phone's Linked devices (it shows as "Google Chrome (Mac OS)"). If it doesn't, re-link. |
+| `Error:` with a stack trace | A crash. Save the trace for diagnosis. |
+
+**3. When did it go quiet?**
+
+```bash
+journalctl -u inet-server --since "2 days ago" --no-pager | grep -v '^\S* \S* \S* \S* npm\[[0-9]*\]: \.*$' | less
+```
+
+The `grep` hides the lines of heartbeat dots. Change `--since` as needed (e.g. `--since "2026-10-01"`).
+
+**4. Did the Pi reboot?**
+
+```bash
+uptime -s
+journalctl --list-boots
+```
+
+The journal persists across reboots, but older entries get rotated out, and a crash loop can push them out quickly. If `journalctl -u inet-server | head -1` is later than when the group went quiet, the start of the outage is no longer in the log.
 
 ## Security notes
 

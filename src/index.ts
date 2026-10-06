@@ -1,6 +1,7 @@
 import http from "http";
 import WhatsApp from 'whatsapp-web.js';
 import qrcode from 'qrcode-terminal';
+import { execFile } from 'child_process';
 
 const { Client, LocalAuth, Events } = WhatsApp;
 const PORT = 52825;
@@ -15,6 +16,24 @@ let whatsAppGood = false;
 let groupID = '';
 let brscPingCount = 0;
 let nonBrscPingCount = 0;
+let readyDeadline = 0;
+let shuttingDown = false;
+
+// systemd sets INVOCATION_ID for services; a manual `npm run listener` doesn't have it
+const UNDER_SYSTEMD = !!process.env.INVOCATION_ID;
+// Exit code for "WhatsApp needs re-linking" - the unit has RestartPreventExitStatus=78
+// so systemd leaves the service stopped instead of restart-looping on a QR prompt
+const EXIT_NEEDS_AUTH = 78;
+const SCAN_WAIT_MS = 5 * 60 * 1000; // Time allowed to scan a QR code when run manually
+
+// Tell systemd we're up (the unit is Type=notify, so it shows 'activating' until
+// this is sent - WhatsApp linked, group found and listening). No-op when run manually.
+function notifySystemdReady() {
+  if (!process.env.NOTIFY_SOCKET) return;
+  execFile('systemd-notify', ['--ready'], (err) => {
+    if (err) console.warn('systemd-notify failed:', err.message);
+  });
+}
 
 
 // Get current date/time as nicely formatted date/time (IE. dd-MM-yyyy HH:mm:ss)
@@ -30,68 +49,84 @@ function nowString(): string {
 }
 
 // Wait for 'whatsAppGood' to become true, with a timeout
+// (readyDeadline is pushed out while a QR code is waiting to be scanned)
 async function waitForWhatsAppGood(timeout: number): Promise<boolean> {
+  readyDeadline = Date.now() + timeout;
   return new Promise((resolve, reject) => {
     const interval = setInterval(() => {
       if (whatsAppGood) {
         clearInterval(interval);  // Stop the interval once the condition is met
-        clearTimeout(timer)
         resolve(true);
+      } else if (Date.now() > readyDeadline) {
+        clearInterval(interval);
+        reject(new Error('Timeout waiting for WhatsApp to be ready.'));
       }
     }, 500); // Check every 500ms if 'whatsAppGood' is true
-
-    // Timeout if the condition is not met within the specified time
-    const timer = setTimeout(() => {
-      clearInterval(interval);  // Clear the interval
-      reject(new Error('Timeout waiting for WhatsApp to be ready.'));
-    }, timeout);
   });
 }
+
+// Known group IDs, used if getChats() fails (it can throw an IndexedDB
+// DataError on some WhatsApp Web builds / long-lived sessions)
+const KNOWN_GROUP_IDS: Record<string, string> = {
+  [WHATSAPP_GROUP]: '120363422701210025@g.us',
+};
 
 // Gets WhatsApp groupID for given group name
 // (Groups that the authenticated user can see!!)
 async function getGroupID(groupName: string): Promise<string> {
-  // Get all chats (includes groups, individual chats, etc.)
-  const chats = await client.getChats();
-  const group = chats.find(chat => chat.isGroup && chat.name === groupName);
-
-  if (group) {
-    console.log(`Group ID for [${groupName}]: ${group.id._serialized}`);  // The group ID
-    return group.id._serialized;
-  } else {
-    console.log(`Group [${groupName}] not found!`);
-    throw new Error(`Cannot find [${groupName}] for current user!`);
+  try {
+    // Get all chats (includes groups, individual chats, etc.)
+    const chats = await client.getChats();
+    const group = chats.find(chat => chat.isGroup && chat.name === groupName);
+    if (group) {
+      console.log(`Group ID for [${groupName}]: ${group.id._serialized}`);  // The group ID
+      return group.id._serialized;
+    }
+    console.log(`Group [${groupName}] not found in chat list!`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`getChats() failed while resolving [${groupName}] (${message}), falling back to known ID`);
   }
+  const fallback = KNOWN_GROUP_IDS[groupName];
+  if (fallback) {
+    console.log(`Using known group ID for [${groupName}]: ${fallback}`);
+    return fallback;
+  }
+  throw new Error(`Cannot find [${groupName}] for current user!`);
 }
 
+// Clearing old messages is cosmetic - never let it take down startup
 async function clearGroupMessages() {
-  const chat = await client.getChatById(groupID);
+  try {
+    const chat = await client.getChatById(groupID);
 
-  if (!chat.isGroup) {
-    console.log("This is not a group chat!");
-    return;
-  }
+    if (!chat.isGroup) {
+      console.log("This is not a group chat!");
+      return;
+    }
 
-  let deletedCount = 0;
-  while (true) {
-    const messages = await chat.fetchMessages({});
-    if (messages.length === 0) break;
+    let deletedCount = 0;
+    while (true) {
+      const messages = await chat.fetchMessages({});
+      if (messages.length === 0) break;
 
-    for (const msg of messages) {
-      try {
-        // Delete for everyone if possible
-        await msg.delete(true);
-        // Optional: small delay to prevent rate limits
-        if (((deletedCount++) % 20) === 0) {
-          await new Promise(res => setTimeout(res, 5000));
+      for (const msg of messages) {
+        try {
+          // Delete for everyone if possible
+          await msg.delete(true);
+          // Optional: small delay to prevent rate limits
+          if (((deletedCount++) % 20) === 0) {
+            await new Promise(res => setTimeout(res, 5000));
+          }
+        } catch (err) {
+          console.log(`Could not delete message ${msg.id._serialized}: ${(err as Error).message}`);
         }
-      } catch (err) {
-        console.log(`Could not delete message ${msg.id._serialized}: ${(err as Error).message}`);
       }
     }
+    console.log(`Deleted ${deletedCount} messages from the group.`);
+  } catch (err) {
+    console.warn('clearGroupMessages() failed, skipping:', err instanceof Error ? err.message : err);
   }
-  console.log(`Deleted ${deletedCount} messages from the group.`);
-
 }
 
 function escapeWhatsApp(message: string): string {
@@ -193,6 +228,7 @@ function runHeartbeatListener() {
   // Finally, start actually listening...
   server.listen(PORT, "0.0.0.0", async () => {
     console.log(`Listening on IPv4 port ${PORT}`);
+    notifySystemdReady();
     await sendMessage(`Restarted monitoring BRSC Internet\n connection (${nowString()})\n\n`);
   });
 }
@@ -254,9 +290,16 @@ client.on(Events.READY, () => {
 });
 // QR code event (for first-time authorization)
 client.on(Events.QR_RECEIVED, (qr) => {
+  if (UNDER_SYSTEMD) {
+    // Nobody can scan a QR code in the journal - stop and wait for a manual re-link
+    console.error('WhatsApp is not linked. Stopping service - run `npm run listener` manually to scan a QR code.');
+    shutdown(EXIT_NEEDS_AUTH);
+    return;
+  }
   console.log('Please scan the following QR code with your WhatsApp mobile app.');
   // Print the QR code in the console (ASCII format)
   qrcode.generate(qr, { small: true });
+  readyDeadline = Date.now() + SCAN_WAIT_MS;
 });
 
 // Handle authentication failure
@@ -268,22 +311,47 @@ client.on(Events.AUTHENTICATION_FAILURE, (message) => {
 // Handle disconnection
 client.on(Events.DISCONNECTED, (reason) => {
   whatsAppGood = false;
-  console.log('Client was logged out:', reason);
+  if (reason === 'LOGOUT') {
+    // Unlinked from the phone - session is gone, needs a manual re-link
+    console.error('WhatsApp was logged out (device unlinked). Run `npm run listener` manually to re-link.');
+    shutdown(EXIT_NEEDS_AUTH);
+  } else {
+    // The library closes the browser on any other disconnect - exit so systemd restarts us
+    console.error('WhatsApp disconnected:', reason);
+    shutdown(1);
+  }
 });
 
 
-const shutdown = async () => {
+const shutdown = async (exitCode = 0) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log('\nShutting down...');
-  await client.destroy();
+  try {
+    await client.destroy();
+  } catch (err) {
+    console.warn('client.destroy() failed:', err instanceof Error ? err.message : err);
+  }
   await new Promise(res => setTimeout(res, 3000));
-  process.exit(0);
+  process.exit(exitCode);
 };
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => shutdown());
+process.on('SIGTERM', () => shutdown());
+
+// The library can reject in the background while we're shutting down (e.g. it
+// tries to reload the page after a logout) - don't let that crash the exit
+process.on('unhandledRejection', (err) => {
+  if (shuttingDown) {
+    console.warn('Ignoring error during shutdown:', err instanceof Error ? err.message : err);
+    return;
+  }
+  console.error('Unhandled rejection:', err);
+  process.exit(1);
+});
 
 client.initialize();
 
-await waitForWhatsAppGood(30000);
+await waitForWhatsAppGood(120000);
 groupID = await getGroupID(WHATSAPP_GROUP);
 await clearGroupMessages();
 
