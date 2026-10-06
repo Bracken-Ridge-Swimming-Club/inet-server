@@ -48,50 +48,68 @@ async function waitForWhatsAppGood(timeout: number): Promise<boolean> {
   });
 }
 
+// Known group IDs, used if getChats() fails (it can throw an IndexedDB
+// DataError on some WhatsApp Web builds / long-lived sessions)
+const KNOWN_GROUP_IDS: Record<string, string> = {
+  [WHATSAPP_GROUP]: '120363422701210025@g.us',
+};
+
 // Gets WhatsApp groupID for given group name
 // (Groups that the authenticated user can see!!)
 async function getGroupID(groupName: string): Promise<string> {
-  // Get all chats (includes groups, individual chats, etc.)
-  const chats = await client.getChats();
-  const group = chats.find(chat => chat.isGroup && chat.name === groupName);
-
-  if (group) {
-    console.log(`Group ID for [${groupName}]: ${group.id._serialized}`);  // The group ID
-    return group.id._serialized;
-  } else {
-    console.log(`Group [${groupName}] not found!`);
-    throw new Error(`Cannot find [${groupName}] for current user!`);
+  try {
+    // Get all chats (includes groups, individual chats, etc.)
+    const chats = await client.getChats();
+    const group = chats.find(chat => chat.isGroup && chat.name === groupName);
+    if (group) {
+      console.log(`Group ID for [${groupName}]: ${group.id._serialized}`);  // The group ID
+      return group.id._serialized;
+    }
+    console.log(`Group [${groupName}] not found in chat list!`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`getChats() failed while resolving [${groupName}] (${message}), falling back to known ID`);
   }
+  const fallback = KNOWN_GROUP_IDS[groupName];
+  if (fallback) {
+    console.log(`Using known group ID for [${groupName}]: ${fallback}`);
+    return fallback;
+  }
+  throw new Error(`Cannot find [${groupName}] for current user!`);
 }
 
+// Clearing old messages is cosmetic - never let it take down startup
 async function clearGroupMessages() {
-  const chat = await client.getChatById(groupID);
+  try {
+    const chat = await client.getChatById(groupID);
 
-  if (!chat.isGroup) {
-    console.log("This is not a group chat!");
-    return;
-  }
+    if (!chat.isGroup) {
+      console.log("This is not a group chat!");
+      return;
+    }
 
-  let deletedCount = 0;
-  while (true) {
-    const messages = await chat.fetchMessages({});
-    if (messages.length === 0) break;
+    let deletedCount = 0;
+    while (true) {
+      const messages = await chat.fetchMessages({});
+      if (messages.length === 0) break;
 
-    for (const msg of messages) {
-      try {
-        // Delete for everyone if possible
-        await msg.delete(true);
-        // Optional: small delay to prevent rate limits
-        if (((deletedCount++) % 20) === 0) {
-          await new Promise(res => setTimeout(res, 5000));
+      for (const msg of messages) {
+        try {
+          // Delete for everyone if possible
+          await msg.delete(true);
+          // Optional: small delay to prevent rate limits
+          if (((deletedCount++) % 20) === 0) {
+            await new Promise(res => setTimeout(res, 5000));
+          }
+        } catch (err) {
+          console.log(`Could not delete message ${msg.id._serialized}: ${(err as Error).message}`);
         }
-      } catch (err) {
-        console.log(`Could not delete message ${msg.id._serialized}: ${(err as Error).message}`);
       }
     }
+    console.log(`Deleted ${deletedCount} messages from the group.`);
+  } catch (err) {
+    console.warn('clearGroupMessages() failed, skipping:', err instanceof Error ? err.message : err);
   }
-  console.log(`Deleted ${deletedCount} messages from the group.`);
-
 }
 
 function escapeWhatsApp(message: string): string {
