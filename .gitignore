@@ -11,3 +11,6 @@ dist/
 
 # Environment / local config
 .env
+
+# Claude Code project instructions (local only)
+CLAUDE.md
