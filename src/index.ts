@@ -2,6 +2,7 @@ import http from "http";
 import WhatsApp from 'whatsapp-web.js';
 import qrcode from 'qrcode-terminal';
 import { execFile } from 'child_process';
+import { existsSync, unlinkSync } from 'fs';
 
 const { Client, LocalAuth, Events } = WhatsApp;
 const PORT = 52825;
@@ -25,6 +26,8 @@ const UNDER_SYSTEMD = !!process.env.INVOCATION_ID;
 // so systemd leaves the service stopped instead of restart-looping on a QR prompt
 const EXIT_NEEDS_AUTH = 78;
 const SCAN_WAIT_MS = 5 * 60 * 1000; // Time allowed to scan a QR code when run manually
+// Left by /usr/local/sbin/weekly-restart so a scheduled restart keeps the group's history
+const KEEP_HISTORY_MARKER = './.keep-history';
 
 // Tell systemd we're up (the unit is Type=notify, so it shows 'activating' until
 // this is sent - WhatsApp linked, group found and listening). No-op when run manually.
@@ -353,7 +356,16 @@ client.initialize();
 
 await waitForWhatsAppGood(120000);
 groupID = await getGroupID(WHATSAPP_GROUP);
-await clearGroupMessages();
+if (existsSync(KEEP_HISTORY_MARKER)) {
+  console.log('Scheduled restart - keeping group messages');
+  try {
+    unlinkSync(KEEP_HISTORY_MARKER);
+  } catch (err) {
+    console.warn('Could not remove keep-history marker:', err instanceof Error ? err.message : err);
+  }
+} else {
+  await clearGroupMessages();
+}
 
 // Start daily Alive messages
 startAliveMessages();

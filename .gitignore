@@ -14,3 +14,4 @@ dist/
 
 # Claude Code project instructions (local only)
 CLAUDE.md
+.keep-history

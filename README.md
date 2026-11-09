@@ -7,6 +7,7 @@ A small sender device at the club posts HTTP heartbeats to this listener. If hea
 ## How it works
 
 1. On startup the monitor **deletes all existing messages in the WhatsApp group** (to keep the channel quiet), then posts a "Restarted monitoring" message.
+   The weekly scheduled restart (Mondays 02:30, `/usr/local/sbin/weekly-restart`) skips the delete: it leaves a `.keep-history` file in the project folder, which the monitor removes when it starts.
 2. A remote device POSTs a heartbeat to this listener every minute or so.
 3. If no heartbeat is received for 4 minutes, an outage message is sent to the WhatsApp group.
 4. When heartbeats resume, a reconnection message is sent.
